@@ -1,0 +1,789 @@
+// ==UserScript==
+// @name         KrypBot
+// @namespace    http://tampermonkey.net/
+// @version      2025-1-2
+// @description  try to take over the world!
+// @author       You
+// @match        https://www.chess.com/play/computer*
+// @match       https://www.chess.com/play/*
+// @match       https://www.chess.com/game/*
+// @match       https://play.chessgpt.vn/*
+// @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+    let interval,show_opponent=false,can_interval = true,main_interval=true,show_evaluation=true,
+        auto_move,current_color = '#000000',fen,checkfen,cp=0,best_cp=0,hint=false,username, Messages = [],msgLen=0;
+    let chessBot = {elo:3200,power:15,status:0,nature:1,type:1,fen:0,time:0.3}
+    let pendingAutoMove = false;
+    let isPanelMinimized = false;
+
+    // Cài đặt mặc định cho auto move delay
+    let minAutoDelay = 4; // Giây
+    let maxAutoDelay = 20; // Giây
+
+    if(!localStorage.getItem('username'))
+    {
+        username = 'User' + [...Array(9).keys()]
+  .map(n => n + 1)
+  .sort(() => Math.random() - 0.5)
+  .slice(0, 5).join('');
+    }
+    else
+    {
+        username = localStorage.getItem('username')
+    }
+
+    // Load cài đặt từ localStorage nếu có
+    if(localStorage.getItem('krypbot_minDelay')) {
+        minAutoDelay = parseInt(localStorage.getItem('krypbot_minDelay'));
+    }
+    if(localStorage.getItem('krypbot_maxDelay')) {
+        maxAutoDelay = parseInt(localStorage.getItem('krypbot_maxDelay'));
+    }
+
+    const script = document.createElement('script');
+
+    script.setAttribute('crossorigin', 'anonymous');
+    script.setAttribute('src', 'https://code.jquery.com/jquery-3.7.1.js');
+    script.setAttribute('integrity', 'sha256-eKhayi8LEQwp4NKxN+CfCh+3qOVUtJn3QNZ0TciWLP4=');
+    script.setAttribute('crossorigin', 'anonymous');
+    document.body.appendChild(script);
+
+    script.onload = () => {
+        $('<link>', {
+    rel: 'stylesheet',
+    type: 'text/css',
+    href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap'
+}).appendTo('head');
+
+        console.log('jQuery loaded!');
+        $(document).ready(function() {
+            const get_number = (elm) =>{
+             const data = ['a','b','c','d','e','f','g','h']
+             return data.indexOf(elm)+1
+            }
+
+            const create_elm = (num)=>{
+                const board = $('chess-board')[0] || $('wc-chess-board')[0] || document.querySelector('.chessboard');
+                const turn = board?.game?.getTurn ? (board.game.getTurn() === board.game.getPlayingAs()) : true;
+                const elm = document.createElement('div')
+             elm.setAttribute('class',`highlight square-${num} myhigh`)
+             const jelm = $(elm).css({'opacity':'0','border':`4px solid ${current_color}`,'background':'rgba(15, 10, 222,0.4)','shadow':'0 0 10px rgba(3, 201, 169,0.8)','border-radius':'50%'})
+
+             // Thêm vào board phù hợp
+             if($('#board-play-computer').length) $('#board-play-computer').append(jelm)
+             else if($('#board-single').length) $('#board-single').append(jelm)
+             else if($('.chessboard').length) $('.chessboard').append(jelm)
+
+             const x = jelm.position().left
+             const y = jelm.position().top;
+             const w = jelm.outerWidth();
+             const h = jelm.outerHeight();
+
+             return [(x+w+x)/2, (y+h+y)/2];
+            }
+
+         const auto_move_piece = function(from, to,board){
+        for (var each=0;each<board.game.getLegalMoves().length;each++){
+            if(board.game.getLegalMoves()[each].from == from){
+                if(board.game.getLegalMoves()[each].to == to){
+                    var move = board.game.getLegalMoves()[each];
+                    board.game.move({
+                        ...move,
+                        promotion: 'false',
+                        animate: false,
+                        userGenerated: true
+                    });
+                }
+            }
+        }
+    }
+
+            // Hàm lấy delay ngẫu nhiên với phạm vi có thể cấu hình
+            const getRandomDelay = () => {
+                if (minAutoDelay < 0.1) minAutoDelay = 0.1; // Giới hạn tối thiểu 0.1 giây
+                if (maxAutoDelay < minAutoDelay) maxAutoDelay = minAutoDelay + 1;
+
+                return (Math.random() * (maxAutoDelay - minAutoDelay) + minAutoDelay) * 1000;
+            }
+
+            // Hàm cập nhật hiển thị phạm vi delay
+            const updateDelayDisplay = () => {
+                $('#delayShow').text(`Tự động đi sau ${minAutoDelay}-${maxAutoDelay} giây`);
+            }
+
+            // Hàm lấy FEN cho ChessGPT.vn
+            const getChessGPTFEN = () => {
+                try {
+                    // Cố gắng lấy FEN từ nhiều nguồn khác nhau
+
+                    // Phương án 1: Tìm trong window object
+                    if(window.chessGame && window.chessGame.fen) {
+                        return window.chessGame.fen();
+                    }
+
+                    // Phương án 2: Tìm từ React props
+                    const boardElement = document.querySelector('.chessboard');
+                    if(boardElement) {
+                        for(let key in boardElement) {
+                            if(key.startsWith('__react')) {
+                                const props = boardElement[key];
+                                if(props?.memoizedProps?.position) {
+                                    return convertPositionToFEN(props.memoizedProps.position);
+                                }
+                            }
+                        }
+                    }
+
+                    // Phương án 3: Đọc trực tiếp từ DOM
+                    return parseBoardToFEN();
+
+                } catch(e) {
+                    console.log('Lỗi khi lấy FEN từ ChessGPT:', e);
+                    return null;
+                }
+            }
+
+            // Parse board DOM thành FEN
+            const parseBoardToFEN = () => {
+                const squares = document.querySelectorAll('.chessboard .square');
+                if(squares.length !== 64) return null;
+
+                let fen = '';
+                let emptyCount = 0;
+
+                for(let i = 0; i < 64; i++) {
+                    const square = squares[i];
+                    const piece = square.querySelector('[class*="piece"]');
+
+                    if(piece) {
+                        if(emptyCount > 0) {
+                            fen += emptyCount;
+                            emptyCount = 0;
+                        }
+
+                        const classList = piece.className;
+                        let pieceChar = '';
+
+                        if(classList.includes('pawn')) pieceChar = 'p';
+                        else if(classList.includes('knight')) pieceChar = 'n';
+                        else if(classList.includes('bishop')) pieceChar = 'b';
+                        else if(classList.includes('rook')) pieceChar = 'r';
+                        else if(classList.includes('queen')) pieceChar = 'q';
+                        else if(classList.includes('king')) pieceChar = 'k';
+
+                        if(classList.includes('white')) pieceChar = pieceChar.toUpperCase();
+
+                        fen += pieceChar;
+                    } else {
+                        emptyCount++;
+                    }
+
+                    if((i + 1) % 8 === 0) {
+                        if(emptyCount > 0) {
+                            fen += emptyCount;
+                            emptyCount = 0;
+                        }
+                        if(i < 63) fen += '/';
+                    }
+                }
+
+                return fen + ' w KQkq - 0 1'; // Thêm các thông tin mặc định
+            }
+
+            // Hàm thực hiện nước đi cho ChessGPT
+            const makeChessGPTMove = (from, to) => {
+                try {
+                    // Tìm ô xuất phát và đích
+                    const fromSquare = document.querySelector(`[data-square="${from}"]`);
+                    const toSquare = document.querySelector(`[data-square="${to}"]`);
+
+                    if(fromSquare && toSquare) {
+                        // Simulate drag and drop
+                        const dragStartEvent = new MouseEvent('mousedown', {
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: fromSquare.getBoundingClientRect().left + 20,
+                            clientY: fromSquare.getBoundingClientRect().top + 20
+                        });
+
+                        const dragEndEvent = new MouseEvent('mouseup', {
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: toSquare.getBoundingClientRect().left + 20,
+                            clientY: toSquare.getBoundingClientRect().top + 20
+                        });
+
+                        fromSquare.dispatchEvent(dragStartEvent);
+                        setTimeout(() => toSquare.dispatchEvent(dragEndEvent), 100);
+                    } else {
+                        console.log('Không tìm thấy ô cờ trên ChessGPT');
+                    }
+                } catch(e) {
+                    console.log('Lỗi khi thực hiện nước đi trên ChessGPT:', e);
+                }
+            }
+
+            const create_div = (str1) =>{
+                try{
+                const target = $('chess-board')[0] || $('wc-chess-board')[0] || document.querySelector('.chessboard');
+
+                const a = get_number(str1[0])
+                const b = get_number(str1[2])
+                console.log(str1.substring(0,2),str1.substring(2,4))
+
+                if(auto_move && !pendingAutoMove){
+                    pendingAutoMove = true;
+                    const randomDelay = getRandomDelay();
+                    console.log(`Auto move sẽ thực hiện sau ${(randomDelay/1000).toFixed(1)} giây`);
+
+                    setTimeout(() => {
+                        const board = $('chess-board')[0] || $('wc-chess-board')[0];
+                        if(board && board.game) {
+                            auto_move_piece(str1.substring(0,2),str1.substring(2,4), board)
+                        } else {
+                            // Xử lý cho chessgpt.vn
+                            makeChessGPTMove(str1.substring(0,2),str1.substring(2,4));
+                        }
+                        pendingAutoMove = false;
+                    }, randomDelay);
+                }
+
+                const first_elm = create_elm(a+str1[1])
+                const last_element = create_elm(b+str1[3])
+
+                if (target) {
+                    $(target).append(`
+        <svg width="100%" height="100%" class='myhigh' style="position: absolute; top: 0; left: 0; pointer-events: none;">
+          <defs>
+            <marker id="arrowhead" markerWidth="12" markerHeight="10"
+                    refX="10" refY="3.5" orient="auto">
+              <polygon points="0 0, 10 3.5, 0 7" fill=${current_color} />
+            </marker>
+          </defs>
+          <line x1="${first_elm[0]}" y1="${first_elm[1]}" x2="${last_element[0]}" y2="${last_element[1]}"
+                stroke=${current_color} stroke-width="4" marker-end="url(#arrowhead)" />
+        </svg>
+    `);
+                }
+                }
+                catch(e){
+                    console.log("an error has occured", e)
+                }
+            }
+
+             async function get_hint()
+            {
+                main_interval = false
+                try{
+                let continuation
+
+                    $('.my-high').remove()
+
+                const board = $('chess-board')[0] || $('wc-chess-board')[0];
+
+const len = $('.myhigh').length
+const opp_len = $('hishigh').length
+const my_peice = board.game.getPlayingAs()
+const turn = board.game.getTurn()
+fen = board.game.getFEN()
+chessBot.fen = board.game.getFEN()
+
+                if(board.game.getTurn() ==  board.game.getPlayingAs())
+                {
+                    $(".myanalysis").remove()
+
+                    if(checkfen !== fen)
+                    {
+                        console.log("am right there")
+                        try{
+                        checkfen = fen;
+                        const data = await fetch(`https://sanandre.pythonanywhere.com/bestCp/?fen=${fen}&turn=${my_peice}`)
+                        const resp = await data.json();
+                            console.log(resp)
+                        best_cp = resp.best_cp;
+                    }
+                     catch(e){
+                     console.log('some error occured again during best_cp'+e)
+                     }
+                    }
+
+                if(!len && can_interval &&hint){
+                 can_interval = false
+                 try{
+                    console.log("nice");
+                     const data = await fetch(`https://sanandre.pythonanywhere.com/getMove/`, {
+                         method: "POST",
+                         headers: {
+                             "Content-Type": "application/json"
+                         },
+                         body: JSON.stringify(chessBot)
+                     });
+                const resp = await data.json();
+                continuation = resp[0]
+                    console.log(continuation)
+
+                  create_div(continuation)
+
+                    can_interval=true
+                }
+
+              catch(e)
+              {
+                  console.log("an error has cocured" + e);can_interval=true
+              }
+                }
+               }
+               else{
+                    $('.myhigh').remove()
+                    if(fen !== checkfen)
+                    {
+                        const lastMove = board.game.getLastMove().to
+                        const finalAalysisMove = String(get_number(lastMove[0])+String(lastMove[1]))
+                        console.log(lastMove,finalAalysisMove)
+
+                        checkfen=fen;
+                        try
+                        {
+                        const data = await fetch(`https://sanandre.pythonanywhere.com/getCp?fen=${encodeURIComponent(fen)}&turn=${my_peice}&cp=${cp}&best_cp=${best_cp}`)
+                        const resp = await data.json()
+
+                        cp = resp.cp;
+                            $('.myanalysis').remove()
+                            if(show_evaluation){
+                        const img_moves = resp.img;
+
+                        $(board).append(`<div class='myanalysis highlight square-${finalAalysisMove}'  data-test-element='highlight' style=';background-color:transparent' >
+                 <img style="position:absolute;top:0;width:20px;height:20x"
+                 src=${img_moves}>
+                 </div>`)
+                            }
+                        $('#evalPosition').text(resp.winning);
+                        $('#evalMove').text(resp.value);
+                        $('#evalMove').css({ "color": resp.color });
+                        }
+                        catch(e){
+                            console.log('some error occured again during cp' +e)
+                        }
+                    }
+               }
+                }
+                catch(e)
+                {
+                    main_interval=true
+                }
+                main_interval = true
+            }
+
+            const main_div = $('#board-layout-main, .game-container, main').first();
+main_div.append(`
+<style>
+  .bot-panel {
+    background: linear-gradient(145deg, #1a1a2e 0%, #16213e 100%);
+    border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    padding: 20px;
+    max-width: 400px;
+    font-family: 'Inter', 'Roboto', sans-serif;
+    color: #e0e0e0;
+    border: 1px solid rgba(255,255,255,0.1);
+    transition: all 0.3s ease;
+  }
+
+  .bot-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+  }
+
+  .bot-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #00d4ff;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  .minimize-btn {
+    background: rgba(255,255,255,0.1);
+    border: none;
+    color: #00d4ff;
+    padding: 6px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    transition: all 0.2s;
+  }
+
+  .minimize-btn:hover {
+    background: rgba(0,212,255,0.2);
+    transform: scale(1.05);
+  }
+
+  .bot-content {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .bot-section {
+    background: rgba(255,255,255,0.05);
+    padding: 12px;
+    border-radius: 10px;
+    border-left: 3px solid #00d4ff;
+  }
+
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #00d4ff;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .radio-group {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .radio-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: color 0.2s;
+  }
+
+  .radio-label:hover {
+    color: #00d4ff;
+  }
+
+  .radio-label input[type="radio"] {
+    cursor: pointer;
+    accent-color: #00d4ff;
+  }
+
+  .slider-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .slider-label {
+    font-size: 11px;
+    color: #999;
+    min-width: 45px;
+  }
+
+  input[type="range"] {
+    flex: 1;
+    height: 6px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 10px;
+    outline: none;
+    cursor: pointer;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: #00d4ff;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(0,212,255,0.5);
+  }
+
+  input[type="color"] {
+    width: 60px;
+    height: 35px;
+    border: 2px solid rgba(255,255,255,0.2);
+    border-radius: 8px;
+    cursor: pointer;
+    background: transparent;
+  }
+
+  .delay-input-container {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .delay-input {
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 6px;
+    color: white;
+    padding: 6px 10px;
+    width: 70px;
+    font-size: 13px;
+    text-align: center;
+  }
+
+  .delay-input:focus {
+    outline: none;
+    border-color: #00d4ff;
+  }
+
+  .delay-separator {
+    color: #00d4ff;
+    font-weight: bold;
+  }
+
+  .status-text {
+    font-size: 12px;
+    color: #999;
+    margin-top: 4px;
+    padding: 8px;
+    background: rgba(0,212,255,0.1);
+    border-radius: 6px;
+    text-align: center;
+  }
+
+  .panel-minimized {
+    max-height: 55px;
+    overflow: hidden;
+    padding: 12px 20px;
+  }
+
+  .panel-minimized .bot-content {
+    display: none;
+  }
+</style>
+
+<div id="personalDiv" class="bot-panel">
+  <div class="bot-header">
+    <span class="bot-title">🤖 Chess Bot</span>
+    <button class="minimize-btn" id="togglePanel">Thu gọn</button>
+  </div>
+
+  <div class="bot-content">
+    <div class="bot-section">
+      <div class="section-title">⚡ Trạng thái Bot</div>
+      <div class="radio-group">
+        <label class="radio-label"><input value='1' type='radio' name='bot-status'> Bật</label>
+        <label class="radio-label"><input checked value='0' type='radio' name='bot-status'> Tắt</label>
+      </div>
+    </div>
+
+    <div class="bot-section">
+      <div class="section-title">🎮 Loại Bot</div>
+      <div class="radio-group">
+        <label class="radio-label"><input checked value='1' type='radio' name='bot-type'> Engine</label>
+        <label class="radio-label"><input value='0' type='radio' name='bot-type'> Người</label>
+      </div>
+    </div>
+
+    <div class="bot-section">
+      <div class="section-title">🎯 Tự động đi</div>
+      <div class="radio-group">
+        <label class="radio-label"><input value='1' type='radio' name='bot-move'> Bật</label>
+        <label class="radio-label"><input checked value='0' type='radio' name='bot-move'> Tắt</label>
+      </div>
+      <div class="delay-input-container" style="margin-top: 8px;">
+        <input type="number" id="minDelay" class="delay-input" min="0.1" max="60" step="0.1" value="${minAutoDelay}">
+        <span class="delay-separator">-</span>
+        <input type="number" id="maxDelay" class="delay-input" min="0.1" max="60" step="0.1" value="${maxAutoDelay}">
+        <span style="font-size: 12px; color: #999;">giây</span>
+      </div>
+      <div class="status-text" id='delayShow'>Tự động đi sau ${minAutoDelay}-${maxAutoDelay} giây</div>
+    </div>
+
+    <div class="bot-section">
+      <div class="section-title">📊 Hiển thị đánh giá</div>
+      <div class="radio-group">
+        <label class="radio-label"><input checked value='1' type='radio' name='show-eval'> Hiện</label>
+        <label class="radio-label"><input value='0' type='radio' name='show-eval'> Ẩn</label>
+      </div>
+    </div>
+
+    <div class="bot-section">
+      <div class="section-title">🎨 Phong cách chơi</div>
+      <div class="radio-group">
+        <label class="radio-label"><input checked value='1' type='radio' name='bot-nature'> Phản công</label>
+        <label class="radio-label"><input value='0' type='radio' name='bot-nature'> Trung lập</label>
+        <label class="radio-label"><input value='-1' type='radio' name='bot-nature'> Phòng thủ</label>
+      </div>
+    </div>
+
+    <div class="bot-section">
+      <div class="section-title">📈 Cấp độ Elo</div>
+      <div class="slider-container">
+        <span class="slider-label">800</span>
+        <input id='eloRange' type='range' min='800' max='3200' step='100' value='3200'>
+        <span class="slider-label">3200</span>
+      </div>
+      <div class="status-text" id='eloShow'>Đang chơi ở ELO 3200</div>
+    </div>
+
+    <div class="bot-section">
+      <div class="section-title">🎨 Màu gợi ý</div>
+      <div style="display: flex; gap: 10px; align-items: center;">
+        <input type="color" id="colorPicker" name="color-changer" value="#000000">
+        <span style="font-size: 12px; color: #999;">Chọn màu hiển thị</span>
+      </div>
+    </div>
+  </div>
+</div>
+`)
+
+$("body").prepend(`
+<style>
+  .eval-panel {
+    position: fixed;
+    right: 20px;
+    top: 80px;
+    background: linear-gradient(145deg, #0f0f23 0%, #1a1a2e 100%);
+    border-radius: 12px;
+    padding: 16px 20px;
+    min-width: 240px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    border: 1px solid rgba(0,212,255,0.3);
+    z-index: 9999;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .eval-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+  }
+
+  .eval-row:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+  }
+
+  .eval-label {
+    font-size: 12px;
+    color: #00d4ff;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .eval-value {
+    font-size: 14px;
+    font-weight: 700;
+    color: #fff;
+  }
+</style>
+
+<div id='evaluation' class='eval-panel'>
+  <div class='eval-row'>
+    <span class='eval-label'>Nước đi:</span>
+    <span class='eval-value' id='evalMove'>---</span>
+  </div>
+  <div class='eval-row'>
+    <span class='eval-label'>Thế cờ:</span>
+    <span class='eval-value' id='evalPosition'>---</span>
+  </div>
+</div>
+`)
+
+            // Toggle panel minimize
+            $("#togglePanel").on('click', function(){
+                isPanelMinimized = !isPanelMinimized;
+                if(isPanelMinimized) {
+                    $("#personalDiv").addClass('panel-minimized');
+                    $(this).text('Mở rộng');
+                } else {
+                    $("#personalDiv").removeClass('panel-minimized');
+                    $(this).text('Thu gọn');
+                }
+            });
+
+            // Cập nhật delay khi người dùng nhập
+            $("#minDelay").on('change', function(){
+                minAutoDelay = parseFloat(this.value);
+                if (minAutoDelay < 0.1) minAutoDelay = 0.1;
+                if (minAutoDelay > maxAutoDelay) {
+                    minAutoDelay = maxAutoDelay - 0.1;
+                    this.value = minAutoDelay;
+                }
+                localStorage.setItem('krypbot_minDelay', minAutoDelay);
+                updateDelayDisplay();
+            });
+
+            $("#maxDelay").on('change', function(){
+                maxAutoDelay = parseFloat(this.value);
+                if (maxAutoDelay < 0.1) maxAutoDelay = 0.1;
+                if (maxAutoDelay < minAutoDelay) {
+                    maxAutoDelay = minAutoDelay + 0.1;
+                    this.value = maxAutoDelay;
+                }
+                localStorage.setItem('krypbot_maxDelay', maxAutoDelay);
+                updateDelayDisplay();
+            });
+
+            // Cập nhật hiển thị ban đầu
+            updateDelayDisplay();
+
+            $("#personalDiv").on('click',function(e){
+            if(e.target.tagName == "INPUT")
+            {
+                const type_name = e.target.name;
+                const type_value = Number.parseInt(e.target.value);
+                switch(type_name){
+                    case "show-eval":
+                        show_evaluation = type_value?true:false
+                        if(type_value)
+                        {
+                            $('#evaluation').css({'display':'block'})
+                        }else{
+                        $('#evaluation').css({'display':'none'})}
+                        break;
+
+                    case "bot-status":
+                        chessBot.status = type_value
+                        if(type_value){
+                            hint = true
+                        }
+                        else
+                        {
+                            hint = false
+                            $(".myhigh").remove()
+                        }
+                    break;
+                    case "bot-move":
+                        auto_move = type_value?true:false
+                        break;
+                    case "bot-nature":
+                        chessBot.nature = type_value
+                    break;
+                    case "bot-type":
+                        chessBot.type = type_value
+                    break;
+
+                    default:
+                        console.log('none')
+                }
+            }
+            })
+
+            $("#eloRange").on('change',function(){
+                chessBot.elo = Number.parseInt(this.value)
+                $('#eloShow').text("Đang chơi ở ELO " + chessBot.elo)
+            })
+
+            $("#colorPicker").on('change',function(){
+                current_color = this.value
+            })
+
+             interval = setInterval(()=>{if(main_interval){get_hint()}},100)
+        });
+    };
+})();

@@ -11,4 +11,6 @@
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        none
 // @require      https://github.com/trantung120213123/jk/raw/main/hjack
+// @downloadUR   https://github.com/trantung120213123/jk/raw/main/kyrp.user.js
+// @updateURL    https://github.com/trantung120213123/jk/raw/main/kyrp.user.js
 // ==/UserScript==

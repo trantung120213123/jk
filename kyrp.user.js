@@ -10,5 +10,5 @@
 // @match       https://play.chessgpt.vn/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        none
-// @require      https://github.com/trantung120213123/jk/raw/main/hjak
+// @require      https://github.com/trantung120213123/jk/raw/main/hjack
 // ==/UserScript==
